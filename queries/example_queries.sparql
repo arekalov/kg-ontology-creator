@@ -1,0 +1,336 @@
+# ===============================================
+# SPARQL Queries for World of Tanks Knowledge Graph
+# ===============================================
+
+PREFIX wot: <http://www.semanticweb.org/ontology/wot#>
+PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+PREFIX xsd: <http://www.w3.org/2001/XMLSchema#>
+
+# ===============================================
+# 1. Найти все тяжелые танки СССР 10 уровня
+# ===============================================
+SELECT ?tank ?name ?hp
+WHERE {
+  ?tank rdf:type wot:HeavyTank .
+  ?tank wot:belongsToNation wot:USSR .
+  ?tank wot:tier 10 .
+  ?tank wot:tankName ?name .
+  OPTIONAL { ?tank wot:maxHP ?hp }
+}
+ORDER BY DESC(?hp)
+
+# ===============================================
+# 2. Топ 10 танков по проценту побед
+# ===============================================
+SELECT ?tankName 
+       (COUNT(?perf) AS ?totalBattles)
+       (SUM(IF(?won, 1, 0)) AS ?wins)
+       ((SUM(IF(?won, 1, 0)) * 100.0 / COUNT(?perf)) AS ?winRate)
+WHERE {
+  ?perf wot:withTank ?tank .
+  ?perf wot:inBattle ?battle .
+  ?battle wot:won ?won .
+  ?tank wot:tankName ?tankName .
+}
+GROUP BY ?tankName
+HAVING (COUNT(?perf) > 50)
+ORDER BY DESC(?winRate)
+LIMIT 10
+
+# ===============================================
+# 3. Средний урон по классам танков
+# ===============================================
+SELECT ?tankType 
+       (AVG(?damage) AS ?avgDamage) 
+       (COUNT(?perf) AS ?battles)
+WHERE {
+  ?perf wot:withTank ?tank .
+  ?perf wot:damage ?damage .
+  ?tank rdf:type ?tankType .
+  FILTER(?tankType IN (wot:HeavyTank, wot:MediumTank, wot:LightTank, wot:TankDestroyer, wot:SelfPropelledGun))
+}
+GROUP BY ?tankType
+ORDER BY DESC(?avgDamage)
+
+# ===============================================
+# 4. Лучшие игроки по среднему урону
+# ===============================================
+SELECT ?playerName 
+       (AVG(?damage) AS ?avgDamage)
+       (AVG(?frags) AS ?avgFrags)
+       (COUNT(?perf) AS ?battles)
+WHERE {
+  ?perf wot:achievedBy ?player .
+  ?perf wot:damage ?damage .
+  ?perf wot:frags ?frags .
+  ?player wot:displayName ?playerName .
+}
+GROUP BY ?playerName
+HAVING (COUNT(?perf) > 100)
+ORDER BY DESC(?avgDamage)
+LIMIT 20
+
+# ===============================================
+# 5. Танки с лучшей точностью стрельбы
+# ===============================================
+SELECT ?tankName 
+       (AVG(?directHits * 100.0 / ?shotsFired) AS ?accuracy)
+       (COUNT(?perf) AS ?battles)
+WHERE {
+  ?perf wot:withTank ?tank .
+  ?perf wot:shotsFired ?shotsFired .
+  ?perf wot:directHits ?directHits .
+  ?tank wot:tankName ?tankName .
+  FILTER(?shotsFired > 0)
+}
+GROUP BY ?tankName
+HAVING (COUNT(?perf) > 50)
+ORDER BY DESC(?accuracy)
+LIMIT 20
+
+# ===============================================
+# 6. Танки лучшие для засвета
+# ===============================================
+SELECT ?tankName 
+       (AVG(?spots) AS ?avgSpots)
+       (AVG(?spottingAssist) AS ?avgSpottingDamage)
+WHERE {
+  ?perf wot:withTank ?tank .
+  ?perf wot:spots ?spots .
+  ?perf wot:spottingAssist ?spottingAssist .
+  ?tank wot:tankName ?tankName .
+}
+GROUP BY ?tankName
+HAVING (AVG(?spots) > 1)
+ORDER BY DESC(?avgSpots)
+LIMIT 15
+
+# ===============================================
+# 7. Статистика побед по нациям
+# ===============================================
+SELECT ?nationName
+       (COUNT(?perf) AS ?battles)
+       ((SUM(IF(?won, 1, 0)) * 100.0 / COUNT(?perf)) AS ?winRate)
+       (AVG(?damage) AS ?avgDamage)
+WHERE {
+  ?perf wot:withTank ?tank .
+  ?perf wot:inBattle ?battle .
+  ?perf wot:damage ?damage .
+  ?battle wot:won ?won .
+  ?tank wot:belongsToNation ?nation .
+  ?nation wot:nationName ?nationName .
+}
+GROUP BY ?nationName
+ORDER BY DESC(?winRate)
+
+# ===============================================
+# 8. Танки с лучшим блокированием урона
+# ===============================================
+SELECT ?tankName 
+       (AVG(?damageBlocked) AS ?avgBlocked)
+       (AVG(?damageReceived) AS ?avgReceived)
+       (AVG(?damageBlocked * 100.0 / (?damageBlocked + ?damageReceived)) AS ?blockRate)
+WHERE {
+  ?perf wot:withTank ?tank .
+  ?perf wot:damageBlocked ?damageBlocked .
+  ?perf wot:damageReceived ?damageReceived .
+  ?tank wot:tankName ?tankName .
+  FILTER(?damageBlocked > 0)
+  FILTER((?damageBlocked + ?damageReceived) > 0)
+}
+GROUP BY ?tankName
+HAVING (COUNT(?perf) > 30)
+ORDER BY DESC(?avgBlocked)
+LIMIT 20
+
+# ===============================================
+# 9. Дисбаланс сторон (spawn 1 vs spawn 2)
+# ===============================================
+SELECT ?spawn 
+       (COUNT(?battle) AS ?battles)
+       ((SUM(IF(?won, 1, 0)) * 100.0 / COUNT(?battle)) AS ?winRate)
+WHERE {
+  ?battle wot:spawn ?spawn .
+  ?battle wot:won ?won .
+}
+GROUP BY ?spawn
+ORDER BY ?spawn
+
+# ===============================================
+# 10. Танки с высоким уроном за короткое время жизни
+# ===============================================
+SELECT ?tankName 
+       (AVG(?damage) AS ?avgDamage)
+       (AVG(?lifeTime) AS ?avgLifeTime)
+       (AVG(?damage / ?lifeTime) AS ?damagePerSecond)
+WHERE {
+  ?perf wot:withTank ?tank .
+  ?perf wot:damage ?damage .
+  ?perf wot:lifeTime ?lifeTime .
+  ?tank wot:tankName ?tankName .
+  FILTER(?lifeTime > 60)
+}
+GROUP BY ?tankName
+HAVING (COUNT(?perf) > 50)
+ORDER BY DESC(?damagePerSecond)
+LIMIT 20
+
+# ===============================================
+# 11. Процент пробития по классам
+# ===============================================
+SELECT ?tankType 
+       (AVG(?penetrations * 100.0 / ?directHits) AS ?penRate)
+WHERE {
+  ?perf wot:withTank ?tank .
+  ?perf wot:directHits ?directHits .
+  ?perf wot:penetrations ?penetrations .
+  ?tank rdf:type ?tankType .
+  FILTER(?directHits > 0)
+  FILTER(?tankType IN (wot:HeavyTank, wot:MediumTank, wot:LightTank, wot:TankDestroyer, wot:SelfPropelledGun))
+}
+GROUP BY ?tankType
+ORDER BY DESC(?penRate)
+
+# ===============================================
+# 12. Игроки, часто играющие в взводе
+# ===============================================
+SELECT ?playerName 
+       (COUNT(?battle) AS ?totalBattles)
+       (SUM(IF(?platoon > 0, 1, 0)) AS ?platoonBattles)
+       ((SUM(IF(?platoon > 0, 1, 0)) * 100.0 / COUNT(?battle)) AS ?platoonRate)
+WHERE {
+  ?perf wot:achievedBy ?player .
+  ?perf wot:inBattle ?battle .
+  ?battle wot:platoon ?platoon .
+  ?player wot:displayName ?playerName .
+}
+GROUP BY ?playerName
+ORDER BY DESC(?platoonRate)
+
+# ===============================================
+# 13. Соотношение урон/полученный урон
+# ===============================================
+SELECT ?tankName 
+       (AVG(?damage) AS ?avgDamageDealt)
+       (AVG(?damageReceived) AS ?avgDamageReceived)
+       (AVG(?damage / ?damageReceived) AS ?ratio)
+WHERE {
+  ?perf wot:withTank ?tank .
+  ?perf wot:damage ?damage .
+  ?perf wot:damageReceived ?damageReceived .
+  ?tank wot:tankName ?tankName .
+  FILTER(?damageReceived > 0)
+}
+GROUP BY ?tankName
+HAVING (COUNT(?perf) > 50)
+ORDER BY DESC(?ratio)
+LIMIT 20
+
+# ===============================================
+# 14. Танки с самым высоким средним опытом
+# ===============================================
+SELECT ?tankName 
+       (AVG(?baseXP) AS ?avgXP)
+       (COUNT(?perf) AS ?battles)
+WHERE {
+  ?perf wot:withTank ?tank .
+  ?perf wot:baseXP ?baseXP .
+  ?tank wot:tankName ?tankName .
+}
+GROUP BY ?tankName
+HAVING (COUNT(?perf) > 50)
+ORDER BY DESC(?avgXP)
+LIMIT 20
+
+# ===============================================
+# 15. Процент урона от невидимых целей
+# ===============================================
+SELECT ?tankName 
+       (AVG(?damageReceivedFromInvisible * 100.0 / ?damageReceived) AS ?invisPercent)
+WHERE {
+  ?perf wot:withTank ?tank .
+  ?perf wot:damageReceived ?damageReceived .
+  ?perf wot:damageReceivedFromInvisible ?damageReceivedFromInvisible .
+  ?tank wot:tankName ?tankName .
+  FILTER(?damageReceived > 0)
+}
+GROUP BY ?tankName
+HAVING (COUNT(?perf) > 30)
+ORDER BY DESC(?invisPercent)
+LIMIT 20
+
+# ===============================================
+# 16. Самые мобильные танки (по дистанции)
+# ===============================================
+SELECT ?tankName 
+       (AVG(?distanceTraveled) AS ?avgDistance)
+       (AVG(?damage) AS ?avgDamage)
+WHERE {
+  ?perf wot:withTank ?tank .
+  ?perf wot:distanceTraveled ?distanceTraveled .
+  ?perf wot:damage ?damage .
+  ?tank wot:tankName ?tankName .
+}
+GROUP BY ?tankName
+HAVING (COUNT(?perf) > 50)
+ORDER BY DESC(?avgDistance)
+LIMIT 20
+
+# ===============================================
+# 17. Танки с частыми "мастерами" (3+ фрага)
+# ===============================================
+SELECT ?tankName 
+       (COUNT(?perf) AS ?battles)
+       (SUM(IF(?frags >= 3, 1, 0)) AS ?masterGames)
+       ((SUM(IF(?frags >= 3, 1, 0)) * 100.0 / COUNT(?perf)) AS ?masterRate)
+WHERE {
+  ?perf wot:withTank ?tank .
+  ?perf wot:frags ?frags .
+  ?tank wot:tankName ?tankName .
+}
+GROUP BY ?tankName
+HAVING (COUNT(?perf) > 50)
+ORDER BY DESC(?masterRate)
+LIMIT 20
+
+# ===============================================
+# 18. Премиум танки vs обычные (средний урон)
+# ===============================================
+SELECT ?isPremium 
+       (AVG(?damage) AS ?avgDamage)
+       (COUNT(?perf) AS ?battles)
+WHERE {
+  ?perf wot:withTank ?tank .
+  ?perf wot:damage ?damage .
+  ?tank wot:isPremium ?isPremium .
+}
+GROUP BY ?isPremium
+ORDER BY ?isPremium
+
+# ===============================================
+# 19. Танки с лучшим потенциальным уроном
+# ===============================================
+SELECT ?tankName 
+       (AVG(?potentialDamageReceived) AS ?avgPotential)
+WHERE {
+  ?perf wot:withTank ?tank .
+  ?perf wot:potentialDamageReceived ?potentialDamageReceived .
+  ?tank wot:tankName ?tankName .
+}
+GROUP BY ?tankName
+HAVING (COUNT(?perf) > 30)
+ORDER BY DESC(?avgPotential)
+LIMIT 20
+
+# ===============================================
+# 20. Список всех классов и количество танков
+# ===============================================
+SELECT ?tankType (COUNT(DISTINCT ?tank) AS ?tankCount)
+WHERE {
+  ?tank rdf:type ?tankType .
+  FILTER(?tankType IN (wot:HeavyTank, wot:MediumTank, wot:LightTank, wot:TankDestroyer, wot:SelfPropelledGun))
+}
+GROUP BY ?tankType
+ORDER BY DESC(?tankCount)
+
