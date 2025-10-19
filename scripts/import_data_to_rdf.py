@@ -127,6 +127,30 @@ class DataImporter:
         counter[module_uri] += 1
         return module_uri
     
+    def get_role_name_from_type(self, tank_type):
+        """Определяет роль танка на основе его типа"""
+        role_mapping = {
+            'heavyTank': 'HeavyAssault',
+            'mediumTank': 'Support',
+            'lightTank': 'Scout',
+            'AT-SPG': 'Sniper',
+            'SPG': 'Artillery'
+        }
+        return role_mapping.get(tank_type, None)
+    
+    def normalize_uri_part(self, text):
+        """Нормализует текст для использования в URI"""
+        if not text:
+            return ""
+        # Заменяем пробелы и спецсимволы на подчеркивания
+        text = str(text).replace(' ', '_').replace('.', '_').replace('-', '_')
+        # Удаляем все не-ASCII символы
+        text = ''.join(c if ord(c) < 128 else '_' for c in text)
+        # Убираем множественные подчеркивания
+        while '__' in text:
+            text = text.replace('__', '_')
+        return text
+    
     def import_tanks_from_wot_data(self, limit=None):
         """Импортирует данные о танках из wot_data.csv"""
         print("\n" + "=" * 60)
@@ -144,6 +168,69 @@ class DataImporter:
         
         # НЕ группируем - используем все конфигурации для создания модулей
         print(f"Processing all {len(df)} configurations to extract modules...")
+        
+        # Сначала создаем все модули из всех конфигураций
+        for idx, row in df.iterrows():
+            # Создаем Gun
+            if pd.notna(row.get('gun')) and pd.notna(row.get('gun.name')):
+                gun_uri = self.create_module_instance(
+                    module_id=row['gun'],
+                    module_type='Gun',
+                    module_name=row.get('gun.name'),
+                    avgPenetration=row.get('ammo.avg_penetration'),
+                    avgDamage=row.get('ammo.avg_damage'),
+                    fireRate=row.get('gun.fire_rate'),
+                    aimTime=row.get('gun.aim_time'),
+                    dpm=row.get('dpm')
+                )
+            
+            # Создаем Engine
+            if pd.notna(row.get('engine')) and pd.notna(row.get('engine.power')):
+                engine_uri = self.create_module_instance(
+                    module_id=row['engine'],
+                    module_type='Engine',
+                    power=row.get('engine.power')
+                )
+            
+            # Создаем Turret
+            if pd.notna(row.get('turret')):
+                turret_uri = self.create_module_instance(
+                    module_id=row['turret'],
+                    module_type='Turret'
+                )
+            
+            # Создаем Suspension
+            if pd.notna(row.get('suspension')):
+                suspension_uri = self.create_module_instance(
+                    module_id=row['suspension'],
+                    module_type='Suspension'
+                )
+            
+            # Создаем Radio
+            if pd.notna(row.get('radio')):
+                radio_uri = self.create_module_instance(
+                    module_id=row['radio'],
+                    module_type='Radio'
+                )
+            
+            if (idx + 1) % 1000 == 0:
+                print(f"  Processed {idx + 1}/{len(df)} configurations for modules")
+        
+        print(f"\n📦 Created module instances:")
+        print(f"   Guns: {len(self.gun_counter)}")
+        print(f"   Engines: {len(self.engine_counter)}")
+        print(f"   Turrets: {len(self.turret_counter)}")
+        print(f"   Suspensions: {len(self.suspension_counter)}")
+        print(f"   Radios: {len(self.radio_counter)}")
+        
+        # Теперь создаем танки (группируем для уникальности)
+        print(f"\n🚜 Creating tank instances...")
+        tanks_unique = df.groupby('name').first().reset_index()
+        print(f"Unique tanks: {len(tanks_unique)}")
+        
+        # Счетчики для характеристик и ролей
+        characteristics_counter = {}
+        roles_counter = {}
         
         for idx, row in tanks_unique.iterrows():
             tank_name = row['name']
@@ -170,12 +257,64 @@ class DataImporter:
                 nation_uri = self.map_nation_to_uri(row['nation'].capitalize())
                 self.g.add((tank_uri, self.WOT.belongsToNation, nation_uri))
             
-            # Характеристики
+            # Создаем TankCharacteristics для танка
+            has_characteristics = False
+            char_uri = self.WOT[f"Characteristics_{self.normalize_uri_part(tank_name)}"]
+            
             if pd.notna(row.get('hp')):
                 self.g.add((tank_uri, self.WOT.maxHP, Literal(int(row['hp']), datatype=XSD.integer)))
+                self.g.add((char_uri, self.WOT.hp, Literal(int(row['hp']), datatype=XSD.integer)))
+                has_characteristics = True
+            
+            if pd.notna(row.get('hull_hp')):
+                self.g.add((char_uri, self.WOT.hullHP, Literal(int(row['hull_hp']), datatype=XSD.integer)))
+                has_characteristics = True
+            
+            if pd.notna(row.get('hull_weight')):
+                self.g.add((char_uri, self.WOT.hullWeight, Literal(int(row['hull_weight']), datatype=XSD.integer)))
+                has_characteristics = True
             
             if pd.notna(row.get('weight')):
                 self.g.add((tank_uri, self.WOT.weight, Literal(int(row['weight']), datatype=XSD.integer)))
+            
+            if pd.notna(row.get('speed_forward')):
+                self.g.add((tank_uri, self.WOT.speedForward, Literal(int(row['speed_forward']), datatype=XSD.integer)))
+                self.g.add((char_uri, self.WOT.speedForward, Literal(int(row['speed_forward']), datatype=XSD.integer)))
+                has_characteristics = True
+            
+            if pd.notna(row.get('speed_backward')):
+                self.g.add((tank_uri, self.WOT.speedBackward, Literal(int(row['speed_backward']), datatype=XSD.integer)))
+                self.g.add((char_uri, self.WOT.speedBackward, Literal(int(row['speed_backward']), datatype=XSD.integer)))
+                has_characteristics = True
+            
+            # Если есть характеристики, создаем инстанс и связываем с танком
+            if has_characteristics:
+                self.g.add((char_uri, RDF.type, self.WOT.TankCharacteristics))
+                self.g.add((tank_uri, self.WOT.hasCharacteristics, char_uri))
+                characteristics_counter[char_uri] = characteristics_counter.get(char_uri, 0) + 1
+            
+            # Создаем TankRole на основе типа танка
+            role_name = self.get_role_name_from_type(row.get('type', 'Tank'))
+            if role_name:
+                role_uri = self.WOT[f"Role_{role_name}"]
+                if role_uri not in roles_counter:
+                    self.g.add((role_uri, RDF.type, self.WOT.TankRole))
+                    self.g.add((role_uri, self.WOT.roleName, Literal(role_name, datatype=XSD.string)))
+                    
+                    # Описание роли
+                    role_descriptions = {
+                        'HeavyAssault': 'Breakthrough and frontline assault tank',
+                        'Support': 'Medium range support and flanking',
+                        'Scout': 'Reconnaissance and spotting',
+                        'Sniper': 'Long range fire support',
+                        'Artillery': 'Indirect fire support'
+                    }
+                    if role_name in role_descriptions:
+                        self.g.add((role_uri, self.WOT.roleDescription, 
+                                   Literal(role_descriptions[role_name], datatype=XSD.string)))
+                
+                self.g.add((tank_uri, self.WOT.hasRole, role_uri))
+                roles_counter[role_uri] = roles_counter.get(role_uri, 0) + 1
             
             # Премиум статус
             if pd.notna(row.get('is_premium')):
@@ -184,17 +323,53 @@ class DataImporter:
             if pd.notna(row.get('is_wheeled')):
                 self.g.add((tank_uri, self.WOT.isWheeled, Literal(bool(row['is_wheeled']), datatype=XSD.boolean)))
             
+            if pd.notna(row.get('is_gift')):
+                self.g.add((tank_uri, self.WOT.isGift, Literal(bool(row['is_gift']), datatype=XSD.boolean)))
+            
             # Цены
-            if pd.notna(row.get('price_credit')):
+            if pd.notna(row.get('price_credit')) and row['price_credit'] != 0:
                 self.g.add((tank_uri, self.WOT.priceCredit, Literal(int(row['price_credit']), datatype=XSD.integer)))
             
-            if pd.notna(row.get('price_gold')):
+            if pd.notna(row.get('price_gold')) and row['price_gold'] != 0:
                 self.g.add((tank_uri, self.WOT.priceGold, Literal(int(row['price_gold']), datatype=XSD.integer)))
+            
+            # Связи с модулями
+            if pd.notna(row.get('gun')):
+                gun_uri = self.WOT[f"Gun_{row['gun']}"]
+                if gun_uri in self.gun_counter:
+                    self.g.add((tank_uri, self.WOT.hasGun, gun_uri))
+                    self.g.add((tank_uri, self.WOT.equipsWith, gun_uri))
+            
+            if pd.notna(row.get('engine')):
+                engine_uri = self.WOT[f"Engine_{row['engine']}"]
+                if engine_uri in self.engine_counter:
+                    self.g.add((tank_uri, self.WOT.hasEngine, engine_uri))
+                    self.g.add((tank_uri, self.WOT.equipsWith, engine_uri))
+            
+            if pd.notna(row.get('turret')):
+                turret_uri = self.WOT[f"Turret_{row['turret']}"]
+                if turret_uri in self.turret_counter:
+                    self.g.add((tank_uri, self.WOT.hasTurret, turret_uri))
+                    self.g.add((tank_uri, self.WOT.equipsWith, turret_uri))
+            
+            if pd.notna(row.get('suspension')):
+                suspension_uri = self.WOT[f"Suspension_{row['suspension']}"]
+                if suspension_uri in self.suspension_counter:
+                    self.g.add((tank_uri, self.WOT.hasSuspension, suspension_uri))
+                    self.g.add((tank_uri, self.WOT.equipsWith, suspension_uri))
+            
+            if pd.notna(row.get('radio')):
+                radio_uri = self.WOT[f"Radio_{row['radio']}"]
+                if radio_uri in self.radio_counter:
+                    self.g.add((tank_uri, self.WOT.hasRadio, radio_uri))
+                    self.g.add((tank_uri, self.WOT.equipsWith, radio_uri))
             
             if (idx + 1) % 100 == 0:
                 print(f"  Processed {idx + 1}/{len(tanks_unique)} tanks")
         
-        print(f"✅ Imported {len(tanks_unique)} tanks")
+        print(f"✅ Imported {len(tanks_unique)} tanks with module connections")
+        print(f"   Tank Characteristics: {len(characteristics_counter)}")
+        print(f"   Tank Roles: {len(roles_counter)}")
     
     def clean_data(self, df):
         """Очистка данных от некорректных значений"""
@@ -434,9 +609,14 @@ class DataImporter:
         
         print(f"\n📊 Final statistics:")
         print(f"   Total triples: {len(self.g):,}")
-        print(f"   Players: {len(self.player_counter)}")
         print(f"   Tanks: {len(self.tank_counter)}")
+        print(f"   Players: {len(self.player_counter)}")
         print(f"   Battles: {self.battle_counter if hasattr(self, 'battle_counter') else 'N/A'}")
+        print(f"   Guns: {len(self.gun_counter)}")
+        print(f"   Engines: {len(self.engine_counter)}")
+        print(f"   Turrets: {len(self.turret_counter)}")
+        print(f"   Suspensions: {len(self.suspension_counter)}")
+        print(f"   Radios: {len(self.radio_counter)}")
 
 
 def main():

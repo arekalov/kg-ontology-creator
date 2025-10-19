@@ -216,6 +216,20 @@ class WoTOntologyCreator:
             self.g.add((prop_uri, RDFS.label, Literal(label_en, lang="en")))
             self.g.add((prop_uri, RDFS.label, Literal(label_ru, lang="ru")))
         
+        # Свойства TankRole
+        role_properties = {
+            'roleName': (XSD.string, 'role name', 'название роли'),
+            'roleDescription': (XSD.string, 'role description', 'описание роли'),
+        }
+        
+        for prop_name, (datatype, label_en, label_ru) in role_properties.items():
+            prop_uri = self.WOT[prop_name]
+            self.g.add((prop_uri, RDF.type, OWL.DatatypeProperty))
+            self.g.add((prop_uri, RDFS.domain, self.WOT.TankRole))
+            self.g.add((prop_uri, RDFS.range, datatype))
+            self.g.add((prop_uri, RDFS.label, Literal(label_en, lang="en")))
+            self.g.add((prop_uri, RDFS.label, Literal(label_ru, lang="ru")))
+        
         # Свойства Player
         player_properties = {
             'displayName': (XSD.string, 'display name', 'никнейм'),
