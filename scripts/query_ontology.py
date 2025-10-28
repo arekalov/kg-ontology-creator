@@ -591,41 +591,48 @@ class OntologyQueryEngine:
         return results
 
     def query_worst_maps_for_tank(self, tank_name, min_battles=10, limit=2):
-        """Топ худших карт для конкретного танка по win rate (при равенстве — по числу боёв)"""
-        # Экранируем кавычки и приводим к нижнему регистру
+        """Топ худших карт для конкретного танка по win rate (при равенстве — по числу боёв, затем по урону)"""
+
         safe_name = str(tank_name).replace('"', '\\"')
         safe_name_lc = safe_name.lower()
 
         query = f"""
-    PREFIX wot:  <http://www.semanticweb.org/ontology/wot#>
-    PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
-    PREFIX xsd:  <http://www.w3.org/2001/XMLSchema#>
+        PREFIX wot:  <http://www.semanticweb.org/ontology/wot#>
+        PREFIX xsd:  <http://www.w3.org/2001/XMLSchema#>
 
-    SELECT ?mapName
-           (COUNT(?perf) AS ?battles)
-           ((SUM(IF(?won = true, 1, 0)) * 100.0 / COUNT(?perf)) AS ?winRate)
-           (AVG(COALESCE(xsd:decimal(?damage), xsd:decimal("0"))) AS ?avgDamage)
-    WHERE {{
-      # Танк по имени/короткому имени (регистронезависимо)
-      ?tank wot:tankName ?tName .
-      OPTIONAL {{ ?tank wot:shortName ?sName . }}
-      FILTER(LCASE(STR(?tName)) = "{safe_name_lc}" || LCASE(STR(?sName)) = "{safe_name_lc}")
+        SELECT ?mapName
+               ?battles
+               ?winRate
+               ?avgDamage
+        WHERE {{
+          {{
+            SELECT (SAMPLE(?mapRaw) AS ?mapName)
+                   (COUNT(?battle) AS ?battles)
+                   ((SUM(IF(?won = true, 1, 0)) * 100.0 / COUNT(?battle)) AS ?winRate)
+                   (AVG(COALESCE(xsd:decimal(?damage), xsd:decimal("0"))) AS ?avgDamage)
+            WHERE {{
+              # Находим нужный танк по имени/короткому имени (регистронезависимо)
+              ?tank wot:tankName ?tName .
+              OPTIONAL {{ ?tank wot:shortName ?sName . }}
+              FILTER(LCASE(STR(?tName)) = "{safe_name_lc}" || LCASE(STR(?sName)) = "{safe_name_lc}")
 
-      # Связанные performance и бой
-      ?perf wot:withTank ?tank .
-      ?perf wot:inBattle ?battle .
-      OPTIONAL {{ ?perf wot:damage ?damage . }}
-      ?battle wot:won ?won .
+              # Performance этого танка и связанные бои
+              ?perf   wot:withTank ?tank .
+              ?perf   wot:inBattle ?battle .
+              ?battle wot:won ?won .
+              ?battle wot:onMap ?mapRaw .
+              OPTIONAL {{ ?perf wot:damage ?damage . }}
 
-      # Название карты из rdfs:label боя, иначе — "Unknown"
-      OPTIONAL {{ ?battle rdfs:label ?battleLabel . }}
-      BIND(COALESCE(?battleLabel, "Unknown") AS ?mapName)
-    }}
-    GROUP BY ?mapName
-    HAVING (COUNT(?perf) >= {int(min_battles)})
-    ORDER BY ASC(?winRate) DESC(?battles)
-    LIMIT {int(limit)}
-    """
+              # Нормализуем ключ карты по регистру, чтобы объединять 'Himmelsdorf' и 'himmelsdorf'
+              BIND(LCASE(STR(?mapRaw)) AS ?mapKey)
+            }}
+            GROUP BY ?mapKey
+            HAVING (COUNT(?battle) >= {int(min_battles)})
+          }}
+        }}
+        ORDER BY ASC(?winRate) DESC(?battles) DESC(?avgDamage)
+        LIMIT {int(limit)}
+        """
         results = self.execute_query(
             query,
             f"Worst {limit} Maps for Tank '{tank_name}' (min {min_battles} battles per map)"
@@ -634,60 +641,73 @@ class OntologyQueryEngine:
         return results
 
     def query_maps_with_side_imbalance(self, threshold_pct=10.0, min_battles_per_side=20, limit=50):
-        """Карты с перекосом по сторонам: одна сторона выигрывает на threshold_pct п.п. чаще другой"""
+        """Карты с перекосом по сторонам: одна сторона выигрывает на threshold_pct п.п. чаще другой.
+           Счёт ведётся по боям (won/spawn — свойства Battle), onMap — строковое свойство."""
         query = f"""
-    PREFIX wot:  <http://www.semanticweb.org/ontology/wot#>
-    PREFIX rdf:  <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
-    PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
-    PREFIX xsd:  <http://www.w3.org/2001/XMLSchema#>
+        PREFIX wot:  <http://www.semanticweb.org/ontology/wot#>
+        PREFIX xsd:  <http://www.w3.org/2001/XMLSchema#>
 
-    SELECT ?mapName ?sideAdv ?winRateAdv ?sideOther ?winRateOther
-           (?diff AS ?winRateDiff) ?battlesAdv ?battlesOther
-    WHERE {{
-      {{
-        SELECT ?mapName ?sideA
-               (COUNT(?battleA) AS ?battlesA)
-               ((SUM(IF(?wonA, 1, 0)) * 100.0 / COUNT(?battleA)) AS ?winRateA)
+        SELECT
+          ?mapName
+          ?sideAdv ?winRateAdv ?battlesAdv
+          ?sideOther ?winRateOther ?battlesOther
+          (?winRateAdv - ?winRateOther AS ?winRateDiff)
         WHERE {{
-          ?perfA   wot:inBattle ?battleA .
-          ?battleA wot:won ?wonA .
-          ?battleA wot:spawn ?sideA .
-          OPTIONAL {{ ?battleA rdfs:label ?mapName . }}
+          # Агрегаты по карте и стороне (первая выборка — A)
+          {{
+            SELECT
+              ?mapKey
+              (SAMPLE(?mapRaw) AS ?mapName)
+              ?sideA
+              (COUNT(?battle) AS ?battlesA)
+              ((SUM(IF(?won, 1, 0)) * 100.0 / COUNT(?battle)) AS ?winRateA)
+            WHERE {{
+              ?battle wot:onMap ?mapRaw ;
+                      wot:spawn ?sideA ;
+                      wot:won   ?won .
+              BIND(LCASE(STR(?mapRaw)) AS ?mapKey)
+            }}
+            GROUP BY ?mapKey ?sideA
+            HAVING (COUNT(?battle) >= {int(min_battles_per_side)})
+          }}
+
+          # Агрегаты по карте и стороне (вторая выборка — B), связываем по той же карте
+          {{
+            SELECT
+              ?mapKey
+              ?sideB
+              (COUNT(?battle) AS ?battlesB)
+              ((SUM(IF(?won, 1, 0)) * 100.0 / COUNT(?battle)) AS ?winRateB)
+            WHERE {{
+              ?battle wot:onMap ?mapRaw ;
+                      wot:spawn ?sideB ;
+                      wot:won   ?won .
+              BIND(LCASE(STR(?mapRaw)) AS ?mapKey)
+            }}
+            GROUP BY ?mapKey ?sideB
+            HAVING (COUNT(?battle) >= {int(min_battles_per_side)})
+          }}
+
+          # Сравниваем разные стороны одной карты; < — чтобы не дублировать пары
+          FILTER(?sideA != ?sideB)
+          FILTER(?sideA <  ?sideB)
+
+          # Определяем сторону с преимуществом
+          BIND(IF(?winRateA >= ?winRateB, ?sideA, ?sideB) AS ?sideAdv)
+          BIND(IF(?winRateA >= ?winRateB, ?winRateA, ?winRateB) AS ?winRateAdv)
+          BIND(IF(?winRateA >= ?winRateB, ?battlesA, ?battlesB) AS ?battlesAdv)
+
+          # И вторую сторону (с меньшим win rate)
+          BIND(IF(?winRateA >= ?winRateB, ?sideB, ?sideA) AS ?sideOther)
+          BIND(IF(?winRateA >= ?winRateB, ?winRateB, ?winRateA) AS ?winRateOther)
+          BIND(IF(?winRateA >= ?winRateB, ?battlesB, ?battlesA) AS ?battlesOther)
+
+          # Порог по разнице в процентах побед
+          FILTER((?winRateAdv - ?winRateOther) >= {float(threshold_pct)})
         }}
-        GROUP BY ?mapName ?sideA
-        HAVING(BOUND(?mapName))
-      }}
-      {{
-        SELECT ?mapName ?sideB
-               (COUNT(?battleB) AS ?battlesB)
-               ((SUM(IF(?wonB, 1, 0)) * 100.0 / COUNT(?battleB)) AS ?winRateB)
-        WHERE {{
-          ?perfB   wot:inBattle ?battleB .
-          ?battleB wot:won ?wonB .
-          ?battleB wot:spawn ?sideB .
-          OPTIONAL {{ ?battleB rdfs:label ?mapName . }}
-        }}
-        GROUP BY ?mapName ?sideB
-        HAVING(BOUND(?mapName))
-      }}
-
-      FILTER(?sideA != ?sideB)
-      FILTER(?sideA <  ?sideB)
-
-      BIND(IF(?winRateA >= ?winRateB, ?sideA, ?sideB) AS ?sideAdv)
-      BIND(IF(?winRateA >= ?winRateB, ?winRateA, ?winRateB) AS ?winRateAdv)
-      BIND(IF(?winRateA >= ?winRateB, ?sideB, ?sideA) AS ?sideOther)
-      BIND(IF(?winRateA >= ?winRateB, ?winRateB, ?winRateA) AS ?winRateOther)
-      BIND(IF(?winRateA >= ?winRateB, ?battlesA, ?battlesB) AS ?battlesAdv)
-      BIND(IF(?winRateA >= ?winRateB, ?battlesB, ?battlesA) AS ?battlesOther)
-      BIND(?winRateAdv - ?winRateOther AS ?diff)
-
-      FILTER(?battlesA >= {int(min_battles_per_side)} && ?battlesB >= {int(min_battles_per_side)})
-      FILTER(?diff >= {float(threshold_pct)})
-    }}
-    ORDER BY DESC(?diff) DESC(?battlesAdv) DESC(?battlesOther)
-    LIMIT {int(limit)}
-    """
+        ORDER BY DESC(?winRateDiff) DESC(?battlesAdv) DESC(?battlesOther) ?mapName
+        LIMIT {int(limit)}
+        """
         results = self.execute_query(
             query,
             f"Maps with Side Imbalance (ΔWR ≥ {threshold_pct} pp; ≥ {min_battles_per_side} battles per side)"
@@ -823,7 +843,7 @@ def main():
     engine.query_best_nation_by_weighted_tanks(limit=1)
     engine.query_tank_with_highest_avg_damage(min_battles=50, top_n=1)
     engine.query_worst_maps_for_tank("B-C 25 t", min_battles=1, limit=2)
-    engine.query_maps_with_side_imbalance(threshold_pct=5.0, min_battles_per_side=20, limit=5)
+    engine.query_maps_with_side_imbalance(threshold_pct=5.0, min_battles_per_side=4, limit=5)
 
     print("\n" + "=" * 60)
     print("💡 TIP: Use --query <name> or --interactive for more options")

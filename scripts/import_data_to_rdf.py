@@ -26,7 +26,7 @@ class DataImporter:
         
         # Счетчики
         self.tank_counter = {}
-        self.player_counter = {}
+        self.map_counter = {}
         self.battle_counter = 0
         self.gun_counter = {}
         self.engine_counter = {}
@@ -41,13 +41,7 @@ class DataImporter:
     def normalize_tank_id(self, tank_id):
         """Создает URI для танка"""
         return self.WOT[f"Tank_{tank_id}"]
-    
-    def normalize_player_name(self, display_name):
-        """Создает URI для игрока"""
-        # Заменяем пробелы и спецсимволы
-        safe_name = display_name.replace(" ", "_").replace("-", "_")
-        return self.WOT[f"Player_{safe_name}"]
-    
+
     def normalize_battle_id(self, index):
         """Создает URI для боя"""
         return self.WOT[f"Battle_{index}"]
@@ -233,7 +227,7 @@ class DataImporter:
         roles_counter = {}
         
         for idx, row in tanks_unique.iterrows():
-            tank_name = row['name']
+            tank_name = row['name'].strip()
             
             # Используем tank_id если есть, иначе генерируем
             tank_id = row.get('tank_id', f"wot_{idx}")
@@ -462,79 +456,67 @@ class DataImporter:
             battle_uri = self.normalize_battle_id(idx)
             perf_uri = self.normalize_performance_id(idx)
             tank_uri = self.normalize_tank_id(row['tank_id'])
-            player_uri = self.normalize_player_name(row['display_name'])
-            
+            map_name = row.get('display_name')  # В этом поле реально хранится карта
+
             # === Battle ===
             self.g.add((battle_uri, RDF.type, self.WOT.Battle))
-            
-            # Время боя
+
+            # Время боя, длительность, победа, сторона, взвод — как раньше...
             if pd.notna(row.get('battle_time')):
                 try:
                     battle_time = pd.to_datetime(row['battle_time'])
-                    self.g.add((battle_uri, self.WOT.battleTime, 
-                              Literal(battle_time, datatype=XSD.dateTime)))
+                    self.g.add((battle_uri, self.WOT.battleTime,
+                                Literal(battle_time, datatype=XSD.dateTime)))
                 except:
                     pass
-            
-            # Продолжительность
+
             if pd.notna(row.get('duration')):
-                self.g.add((battle_uri, self.WOT.duration, 
-                          Literal(int(row['duration']), datatype=XSD.integer)))
-            
-            # Победа
+                self.g.add((battle_uri, self.WOT.duration,
+                            Literal(int(row['duration']), datatype=XSD.integer)))
+
             if pd.notna(row.get('won')):
-                self.g.add((battle_uri, self.WOT.won, 
-                          Literal(bool(row['won']), datatype=XSD.boolean)))
-            
-            # Сторона
+                self.g.add((battle_uri, self.WOT.won,
+                            Literal(bool(row['won']), datatype=XSD.boolean)))
+
             if pd.notna(row.get('spawn')):
-                self.g.add((battle_uri, self.WOT.spawn, 
-                          Literal(int(row['spawn']), datatype=XSD.integer)))
-            
-            # Взвод
+                self.g.add((battle_uri, self.WOT.spawn,
+                            Literal(int(row['spawn']), datatype=XSD.integer)))
+
             if pd.notna(row.get('platoon')):
-                self.g.add((battle_uri, self.WOT.platoon, 
-                          Literal(int(row['platoon']), datatype=XSD.integer)))
-            
-            # === Player (если еще не создан) ===
-            if player_uri not in self.player_counter:
-                self.g.add((player_uri, RDF.type, self.WOT.Player))
-                self.g.add((player_uri, self.WOT.displayName, 
-                          Literal(row['display_name'], datatype=XSD.string)))
-                self.player_counter[player_uri] = 0
-            
-            self.player_counter[player_uri] += 1
-            
-            # === Tank (обновляем данные из tomato если танка нет) ===
+                self.g.add((battle_uri, self.WOT.platoon,
+                            Literal(int(row['platoon']), datatype=XSD.integer)))
+
+            # Новое: сохраняем карту как Battle.onMap (datatype string)
+            if pd.notna(map_name):
+                self.g.add((battle_uri, self.WOT.onMap,
+                            Literal(str(map_name), datatype=XSD.string)))
+                self.map_counter[map_name] = self.map_counter.get(map_name, 0) + 1
+
+            # === Tank === (как раньше, если не был создан)
             if tank_uri not in self.tank_counter:
                 tank_type = self.map_class_to_type(row.get('class', 'Tank'))
                 self.g.add((tank_uri, RDF.type, tank_type))
-                self.g.add((tank_uri, self.WOT.tankName, 
-                          Literal(row['name'], datatype=XSD.string)))
-                
+                self.g.add((tank_uri, self.WOT.tankName,
+                            Literal(row['name'], datatype=XSD.string)))
                 if pd.notna(row.get('tier')):
-                    self.g.add((tank_uri, self.WOT.tier, 
-                              Literal(int(row['tier']), datatype=XSD.integer)))
-                
+                    self.g.add((tank_uri, self.WOT.tier,
+                                Literal(int(row['tier']), datatype=XSD.integer)))
                 if pd.notna(row.get('nation')):
                     nation_uri = self.map_nation_to_uri(row['nation'])
                     self.g.add((tank_uri, self.WOT.belongsToNation, nation_uri))
-                
                 if pd.notna(row.get('max_health')):
-                    self.g.add((tank_uri, self.WOT.maxHP, 
-                              Literal(int(row['max_health']), datatype=XSD.integer)))
-                
+                    self.g.add((tank_uri, self.WOT.maxHP,
+                                Literal(int(row['max_health']), datatype=XSD.integer)))
                 self.tank_counter[tank_uri] = 0
-            
+
             self.tank_counter[tank_uri] += 1
-            
+
             # === BattlePerformance ===
             self.g.add((perf_uri, RDF.type, self.WOT.BattlePerformance))
-            
-            # Связи
+
+            # Связи (без achievedBy):
             self.g.add((perf_uri, self.WOT.inBattle, battle_uri))
             self.g.add((perf_uri, self.WOT.withTank, tank_uri))
-            self.g.add((perf_uri, self.WOT.achievedBy, player_uri))
             self.g.add((battle_uri, self.WOT.hasPerformance, perf_uri))
             
             # Урон
@@ -588,7 +570,6 @@ class DataImporter:
         self.battle_counter = len(df)
         
         print(f"✅ Imported {len(df)} battles")
-        print(f"   Unique players: {len(self.player_counter)}")
         print(f"   Unique tanks: {len(self.tank_counter)}")
     
     def save_graph(self, output_name="wot_with_data"):
@@ -610,7 +591,7 @@ class DataImporter:
         print(f"\n📊 Final statistics:")
         print(f"   Total triples: {len(self.g):,}")
         print(f"   Tanks: {len(self.tank_counter)}")
-        print(f"   Players: {len(self.player_counter)}")
+        print(f"   Maps: {len(self.map_counter)}")
         print(f"   Battles: {self.battle_counter if hasattr(self, 'battle_counter') else 'N/A'}")
         print(f"   Guns: {len(self.gun_counter)}")
         print(f"   Engines: {len(self.engine_counter)}")
