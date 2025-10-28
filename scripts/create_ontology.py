@@ -254,6 +254,7 @@ class WoTOntologyCreator:
             'won': (XSD.boolean, 'won', 'победа'),
             'spawn': (XSD.integer, 'spawn', 'сторона'),
             'platoon': (XSD.integer, 'platoon', 'взвод'),
+            'onMap': (XSD.string, 'on map', 'на карте'),
         }
         
         for prop_name, (datatype, label_en, label_ru) in battle_properties.items():
