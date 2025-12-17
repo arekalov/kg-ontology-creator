@@ -637,7 +637,7 @@ def main():
     importer.import_tanks_from_wot_data(limit=args.tanks)
     
     # Импортируем данные о боях
-    importer.import_battles_from_tomato(limit=args.battles, random_sample=not args.no_random)
+    # importer.import_battles_from_tomato(limit=args.battles, random_sample=not args.no_random)
     
     # Сохраняем
     importer.save_graph(output_name=args.output)
